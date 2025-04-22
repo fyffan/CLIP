@@ -155,12 +155,19 @@ class ModifiedResNet(nn.Module):
 
 
 class LayerNorm(nn.LayerNorm):
-    """Subclass torch's LayerNorm to handle fp16."""
+    """Subclass torch's LayerNorm to handle fp16.
+    实现混合精度训练。
+    在混合精度训练中，多数操作使用fp16加速计算，但归一化等操作需要更高精度。
+    直接使用fp16计算层归一化可能导致数值不稳定（如分母接近零时溢出），故需临时转换为fp32。
+
+    兼容性：通过恢复原始数据类型，确保该层输出与后续层的输入类型一致，避免类型不匹配错误。
+    """
+    
 
     def forward(self, x: torch.Tensor):
-        orig_type = x.dtype
-        ret = super().forward(x.type(torch.float32))
-        return ret.type(orig_type)
+        orig_type = x.dtype  # 保存输入张量的原始数据类型
+        ret = super().forward(x.type(torch.float32))  # 将输入转为float32后执行父类LayerNorm
+        return ret.type(orig_type)  # 将结果转回原始数据类型
 
 
 class QuickGELU(nn.Module):
