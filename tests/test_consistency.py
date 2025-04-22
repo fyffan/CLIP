@@ -6,6 +6,7 @@ from PIL import Image
 import clip
 
 
+# 测试 OpenAI CLIP 模型在不同加载模式下（JIT 编译与非 JIT）输出一致性的单元测试
 @pytest.mark.parametrize('model_name', clip.available_models())
 def test_consistency(model_name):
     device = "cpu"

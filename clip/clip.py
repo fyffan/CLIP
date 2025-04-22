@@ -39,12 +39,12 @@ _MODELS = {
     "ViT-L/14@336px": "https://openaipublic.azureedge.net/clip/models/3035c92b350959924f9f00213499208652fc7ea050643e8b385c2dac08641f02/ViT-L-14-336px.pt",
 }
 
-
+# 从网站上下载模型？
 def _download(url: str, root: str):
     os.makedirs(root, exist_ok=True)
     filename = os.path.basename(url)
 
-    expected_sha256 = url.split("/")[-2]
+    expected_sha256 = url.split("/")[-2]  # 从倒数第二部分提取哈希值
     download_target = os.path.join(root, filename)
 
     if os.path.exists(download_target) and not os.path.isfile(download_target):
@@ -55,7 +55,9 @@ def _download(url: str, root: str):
             return download_target
         else:
             warnings.warn(f"{download_target} exists, but the SHA256 checksum does not match; re-downloading the file")
+    # 如果文件存在但哈希值不匹配，则重新下载
 
+    # 下载文件并显示进度条
     with urllib.request.urlopen(url) as source, open(download_target, "wb") as output:
         with tqdm(total=int(source.info().get("Content-Length")), ncols=80, unit='iB', unit_scale=True, unit_divisor=1024) as loop:
             while True:
@@ -66,16 +68,18 @@ def _download(url: str, root: str):
                 output.write(buffer)
                 loop.update(len(buffer))
 
+    # 下载完成后检查文件的 SHA256 哈希值
     if hashlib.sha256(open(download_target, "rb").read()).hexdigest() != expected_sha256:
         raise RuntimeError("Model has been downloaded but the SHA256 checksum does not not match")
 
     return download_target
+    # 返回下载文件的路径
 
 
 def _convert_image_to_rgb(image):
     return image.convert("RGB")
 
-
+# 图像预处理
 def _transform(n_px):
     return Compose([
         Resize(n_px, interpolation=BICUBIC),
@@ -85,12 +89,14 @@ def _transform(n_px):
         Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
     ])
 
-
+    
+# 返回所有可用的 CLIP 模型名称的列表
 def available_models() -> List[str]:
     """Returns the names of available CLIP models"""
     return list(_MODELS.keys())
 
 
+# 加载可用的CLIP模型
 def load(name: str, device: Union[str, torch.device] = "cuda" if torch.cuda.is_available() else "cpu", jit: bool = False, download_root: str = None):
     """Load a CLIP model
 
@@ -135,6 +141,7 @@ def load(name: str, device: Union[str, torch.device] = "cuda" if torch.cuda.is_a
                 jit = False
             state_dict = torch.load(opened_file, map_location="cpu")
 
+    # 如果不即时编译 Just-In-Time (JIT)，则加载模型，并返回模型和预处理函数
     if not jit:
         model = build_model(state_dict or model.state_dict()).to(device)
         if str(device) == "cpu":
@@ -200,6 +207,7 @@ def load(name: str, device: Union[str, torch.device] = "cuda" if torch.cuda.is_a
         model.float()
 
     return model, _transform(model.input_resolution.item())
+    # 返回模型和图像预处理函数
 
 
 def tokenize(texts: Union[str, List[str]], context_length: int = 77, truncate: bool = False) -> Union[torch.IntTensor, torch.LongTensor]:

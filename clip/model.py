@@ -174,19 +174,23 @@ class QuickGELU(nn.Module):
     def forward(self, x: torch.Tensor):
         return x * torch.sigmoid(1.702 * x)
 
-
+# 残差注意力块
 class ResidualAttentionBlock(nn.Module):
     def __init__(self, d_model: int, n_head: int, attn_mask: torch.Tensor = None):
         super().__init__()
 
         self.attn = nn.MultiheadAttention(d_model, n_head)
+        # 这里的多头注意力直接调用包
         self.ln_1 = LayerNorm(d_model)
+        # 第一层归一化
+        # 前馈网络？？MLP
         self.mlp = nn.Sequential(OrderedDict([
             ("c_fc", nn.Linear(d_model, d_model * 4)),
             ("gelu", QuickGELU()),
             ("c_proj", nn.Linear(d_model * 4, d_model))
         ]))
         self.ln_2 = LayerNorm(d_model)
+        # 第二层归一化
         self.attn_mask = attn_mask
 
     def attention(self, x: torch.Tensor):
@@ -198,12 +202,12 @@ class ResidualAttentionBlock(nn.Module):
         x = x + self.mlp(self.ln_2(x))
         return x
 
-
+# 通用Transformer模块，如何区分？
 class Transformer(nn.Module):
     def __init__(self, width: int, layers: int, heads: int, attn_mask: torch.Tensor = None):
         super().__init__()
-        self.width = width
-        self.layers = layers
+        self.width = width  # 嵌入维度
+        self.layers = layers  # 层数
         self.resblocks = nn.Sequential(*[ResidualAttentionBlock(width, heads, attn_mask) for _ in range(layers)])
 
     def forward(self, x: torch.Tensor):
@@ -214,17 +218,27 @@ class VisionTransformer(nn.Module):
     def __init__(self, input_resolution: int, patch_size: int, width: int, layers: int, heads: int, output_dim: int):
         super().__init__()
         self.input_resolution = input_resolution
+        # 输入图像的尺寸
         self.output_dim = output_dim
+        # 输出维度？？？指的是什么？
         self.conv1 = nn.Conv2d(in_channels=3, out_channels=width, kernel_size=patch_size, stride=patch_size, bias=False)
+        # 将图像分成多个小块（patch），每个小块的大小为 patch_size x patch_size，输出通道数为 width
+        # 输入[batch, n_channels, height, width]，输出[batch, width, grid, grid](grid = input_resolution / patch_size)
+        # 一个图像单位（Token）对应成一个嵌入，嵌入维度为width，相当于词嵌入的维度
 
-        scale = width ** -0.5
+        scale = width ** -0.5  # scale是固定的
         self.class_embedding = nn.Parameter(scale * torch.randn(width))
+        # self.class_embedding的shape为[width]，表示图像的类别嵌入
+        # 图像对应的嵌入维度为width
         self.positional_embedding = nn.Parameter(scale * torch.randn((input_resolution // patch_size) ** 2 + 1, width))
+        # 初始化位置嵌入，位置嵌入维度也为width，序列长度最长为(input_resolution // patch_size) ** 2 + 1
         self.ln_pre = LayerNorm(width)
+        # 归一化层
 
         self.transformer = Transformer(width, layers, heads)
 
         self.ln_post = LayerNorm(width)
+        # 归一化层
         self.proj = nn.Parameter(scale * torch.randn(width, output_dim))
 
     def forward(self, x: torch.Tensor):
@@ -233,30 +247,34 @@ class VisionTransformer(nn.Module):
         x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
         x = torch.cat([self.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x], dim=1)  # shape = [*, grid ** 2 + 1, width]
         x = x + self.positional_embedding.to(x.dtype)
+        # x的shape = [*, grid ** 2 + 1, width]
         x = self.ln_pre(x)
 
         x = x.permute(1, 0, 2)  # NLD -> LND
+        # x的shape = [grid ** 2 + 1, batch_size, width]
         x = self.transformer(x)
         x = x.permute(1, 0, 2)  # LND -> NLD
+        # x的shape = [batch_size, grid ** 2 + 1, width]
 
         x = self.ln_post(x[:, 0, :])
 
         if self.proj is not None:
             x = x @ self.proj
+            # x.shape = [batch_size, output_dim]
 
         return x
 
-
+# CLIP模型框架
 class CLIP(nn.Module):
     def __init__(self,
-                 embed_dim: int,
+                 embed_dim: int,  # 最后映射的空间维数
                  # vision
                  image_resolution: int,
                  vision_layers: Union[Tuple[int, int, int, int], int],
                  vision_width: int,
                  vision_patch_size: int,
                  # text
-                 context_length: int,
+                 context_length: int,  # 长度
                  vocab_size: int,
                  transformer_width: int,
                  transformer_heads: int,
@@ -300,7 +318,8 @@ class CLIP(nn.Module):
 
         self.text_projection = nn.Parameter(torch.empty(transformer_width, embed_dim))
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
-
+        # logit_scale是一个可学习的参数，初始化为log(1/0.07)，
+        # 调节余弦相似度的温度，放大/缩小 logits 的范围，影响训练的对比损失。
         self.initialize_parameters()
 
     def initialize_parameters(self):
@@ -364,21 +383,28 @@ class CLIP(nn.Module):
 
     def forward(self, image, text):
         image_features = self.encode_image(image)
+        # 形状为[batch_size, embed_dim]
         text_features = self.encode_text(text)
+        # 形状为[batch_size, embed_dim]
 
         # normalized features
+        # L2归一化：把每个向量的模长标准化为1，
+        # 这样后续的点积（@）就等价于 cosine similarity（余弦相似度）
         image_features = image_features / image_features.norm(dim=1, keepdim=True)
         text_features = text_features / text_features.norm(dim=1, keepdim=True)
 
         # cosine similarity as logits
         logit_scale = self.logit_scale.exp()
         logits_per_image = logit_scale * image_features @ text_features.t()
+        # 形状为[batch_size, batch_size]
         logits_per_text = logits_per_image.t()
 
         # shape = [global_batch_size, global_batch_size]
         return logits_per_image, logits_per_text
 
 
+# 适用的参数从 float32（默认精度）转换为 float16（半精度），
+# 以便节省显存、加快推理速度。
 def convert_weights(model: nn.Module):
     """Convert applicable model parameters to fp16"""
 
@@ -404,29 +430,45 @@ def convert_weights(model: nn.Module):
 
 
 def build_model(state_dict: dict):
+    # 通过检查是否存在 visual.proj 键，判断视觉编码器是 ViT 还是 ResNet。
     vit = "visual.proj" in state_dict
 
     if vit:
         vision_width = state_dict["visual.conv1.weight"].shape[0]
+        # 嵌入维度
         vision_layers = len([k for k in state_dict.keys() if k.startswith("visual.") and k.endswith(".attn.in_proj_weight")])
+        # Transformer 层数
         vision_patch_size = state_dict["visual.conv1.weight"].shape[-1]
+        # 分块大小
         grid_size = round((state_dict["visual.positional_embedding"].shape[0] - 1) ** 0.5)
+        # 分块后的网格尺寸
         image_resolution = vision_patch_size * grid_size
+        # 输入图像分辨率
     else:
         counts: list = [len(set(k.split(".")[2] for k in state_dict if k.startswith(f"visual.layer{b}"))) for b in [1, 2, 3, 4]]
+        # ResNet 层数
         vision_layers = tuple(counts)
+        # ResNet 层配置
         vision_width = state_dict["visual.layer1.0.conv1.weight"].shape[0]
+        # 初始卷积层的输出通道数???
         output_width = round((state_dict["visual.attnpool.positional_embedding"].shape[0] - 1) ** 0.5)
+        # 最后一层的输出宽度
         vision_patch_size = None
         assert output_width ** 2 + 1 == state_dict["visual.attnpool.positional_embedding"].shape[0]
         image_resolution = output_width * 32
 
     embed_dim = state_dict["text_projection"].shape[1]
+    # 词嵌入维度
     context_length = state_dict["positional_embedding"].shape[0]
+    # 文本长度（总词数（Token数））
     vocab_size = state_dict["token_embedding.weight"].shape[0]
+    # 词表大小
     transformer_width = state_dict["ln_final.weight"].shape[0]
+    # Transformer隐藏层维度，编码器输出的维数？？？
     transformer_heads = transformer_width // 64
+    # 注意力头数
     transformer_layers = len(set(k.split(".")[2] for k in state_dict if k.startswith("transformer.resblocks")))
+    # Transformer 层数
 
     model = CLIP(
         embed_dim,
